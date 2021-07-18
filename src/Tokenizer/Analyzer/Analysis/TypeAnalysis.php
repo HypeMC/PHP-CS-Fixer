@@ -77,6 +77,11 @@ final class TypeAnalysis implements StartEndTokenAwareAnalysis
         if (0 === strpos($name, '?')) {
             $this->name = substr($name, 1);
             $this->nullable = true;
+        } elseif (
+            \PHP_VERSION_ID >= 80000
+            && (false !== stripos($name, 'null|') || false !== stripos($name, '|null'))
+        ) {
+            $this->nullable = true;
         }
 
         $this->startIndex = $startIndex;

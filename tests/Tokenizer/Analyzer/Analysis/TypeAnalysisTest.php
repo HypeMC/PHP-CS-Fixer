@@ -35,11 +35,9 @@ final class TypeAnalysisTest extends TestCase
     {
         $analysis = new TypeAnalysis('string', 1, 2);
         static::assertSame('string', $analysis->getName());
-        static::assertFalse($analysis->isNullable());
 
         $analysis = new TypeAnalysis('?\foo\bar', 1, 2);
         static::assertSame('\foo\bar', $analysis->getName());
-        static::assertTrue($analysis->isNullable());
     }
 
     public function testStartIndex()
@@ -84,5 +82,43 @@ final class TypeAnalysisTest extends TestCase
             ['void', true],
             ['other', false],
         ];
+    }
+
+    /**
+     * @dataProvider provideNullableCases
+     *
+     * @param string $input
+     * @param bool   $expected
+     */
+    public function testIsNullable($input, $expected)
+    {
+        $analysis = new TypeAnalysis($input, 1, 2);
+        static::assertSame($expected, $analysis->isNullable());
+    }
+
+    public function provideNullableCases()
+    {
+        yield ['string', false];
+        yield ['?string', true];
+        yield ['\foo\bar', false];
+        yield ['?\foo\bar', true];
+
+        if (\PHP_VERSION_ID >= 80000) {
+            yield ['string|int', false];
+            yield ['string|null', true];
+            yield ['null|string', true];
+            yield ['string|NULL', true];
+            yield ['NULL|string', true];
+            yield ['string|int|null', true];
+            yield ['null|string|int', true];
+            yield ['string|null|int', true];
+            yield ['string|int|NULL', true];
+            yield ['NULL|string|int', true];
+            yield ['string|NULL|int', true];
+            yield ['string|\foo\bar', false];
+            yield ['string|\foo\bar|null', true];
+            yield ['null|string|\foo\bar', true];
+            yield ['string|null|\foo\bar', true];
+        }
     }
 }
