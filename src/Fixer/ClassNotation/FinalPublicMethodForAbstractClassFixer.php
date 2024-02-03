@@ -18,6 +18,7 @@ use PhpCsFixer\AbstractFixer;
 use PhpCsFixer\FixerDefinition\CodeSample;
 use PhpCsFixer\FixerDefinition\FixerDefinition;
 use PhpCsFixer\FixerDefinition\FixerDefinitionInterface;
+use PhpCsFixer\Tokenizer\CT;
 use PhpCsFixer\Tokenizer\Token;
 use PhpCsFixer\Tokenizer\Tokens;
 
@@ -26,27 +27,6 @@ use PhpCsFixer\Tokenizer\Tokens;
  */
 final class FinalPublicMethodForAbstractClassFixer extends AbstractFixer
 {
-    /**
-     * @var array<string, true>
-     */
-    private array $magicMethods = [
-        '__construct' => true,
-        '__destruct' => true,
-        '__call' => true,
-        '__callstatic' => true,
-        '__get' => true,
-        '__set' => true,
-        '__isset' => true,
-        '__unset' => true,
-        '__sleep' => true,
-        '__wakeup' => true,
-        '__tostring' => true,
-        '__invoke' => true,
-        '__set_state' => true,
-        '__clone' => true,
-        '__debuginfo' => true,
-    ];
-
     public function getDefinition(): FixerDefinitionInterface
     {
         return new FixerDefinition(
@@ -71,90 +51,102 @@ abstract class AbstractMachine
 
     public function isCandidate(Tokens $tokens): bool
     {
-        return $tokens->isAllTokenKindsFound([T_ABSTRACT, T_PUBLIC, T_FUNCTION]);
-    }
-
-    public function isRisky(): bool
-    {
-        return true;
+        return $tokens->isAnyTokenKindsFound([T_CLASS, T_INTERFACE]);
     }
 
     protected function applyFix(\SplFileInfo $file, Tokens $tokens): void
     {
-        $abstracts = array_keys($tokens->findGivenKind(T_ABSTRACT));
+        // možda ignore child classa/interfacea?
+        $classes = [
+            ...array_keys($tokens->findGivenKind(T_CLASS)),
+            ...array_keys($tokens->findGivenKind(T_INTERFACE)), // optional?
+        ];
 
-        while ($abstractIndex = array_pop($abstracts)) {
-            $classIndex = $tokens->getNextTokenOfKind($abstractIndex, [[T_CLASS], [T_FUNCTION]]);
-            if (!$tokens[$classIndex]->isGivenKind(T_CLASS)) {
+        while ($classIndex = array_pop($classes)) {
+            $classOpenIndex = $tokens->getNextTokenOfKind($classIndex, ['{']);
+
+            if ($this->hasInterface($tokens, $classIndex, $classOpenIndex)) {
                 continue;
             }
 
-            $classOpen = $tokens->getNextTokenOfKind($classIndex, ['{']);
-            $classClose = $tokens->findBlockEnd(Tokens::BLOCK_TYPE_CURLY_BRACE, $classOpen);
+            $classCloseIndex = $tokens->findBlockEnd(Tokens::BLOCK_TYPE_CURLY_BRACE, $classOpenIndex);
 
-            $this->fixClass($tokens, $classOpen, $classClose);
+            if ($this->hasToStringMethod($tokens, $classOpenIndex, $classCloseIndex)) {
+                $this->fixClass($tokens, $classIndex, $classOpenIndex);
+            }
         }
     }
 
-    private function fixClass(Tokens $tokens, int $classOpenIndex, int $classCloseIndex): void
+    private function hasInterface(Tokens $tokens, int $classIndex, int $classOpenIndex): bool
     {
-        for ($index = $classCloseIndex - 1; $index > $classOpenIndex; --$index) {
-            // skip method contents
-            if ($tokens[$index]->equals('}')) {
-                $index = $tokens->findBlockStart(Tokens::BLOCK_TYPE_CURLY_BRACE, $index);
+        $implementsIndex = $tokens->getNextTokenOfKind($classIndex, [[T_IMPLEMENTS]]);
 
-                continue;
+        if (null === $implementsIndex || $implementsIndex > $classOpenIndex) {
+            return false;
+        }
+
+        for ($i = $implementsIndex; $i < $classOpenIndex; ++$i) {
+            $token = $tokens[$i];
+
+            if ($token->isGivenKind(T_STRING) && \Stringable::class === $token->getContent()) {
+                return true;
             }
+        }
 
-            // skip non public methods
-            if (!$tokens[$index]->isGivenKind(T_PUBLIC)) {
+        return false;
+    }
+
+    private function hasToStringMethod(Tokens $tokens, int $classOpenIndex, int $classCloseIndex): bool
+    {
+        for ($index = $classOpenIndex + 1; $index < $classCloseIndex; ++$index) {
+            if (!$tokens[$index]->isGivenKind(T_FUNCTION)) {
                 continue;
             }
 
             $nextIndex = $tokens->getNextMeaningfulToken($index);
             $nextToken = $tokens[$nextIndex];
 
-            if ($nextToken->isGivenKind(T_STATIC)) {
+            if ($nextToken->isGivenKind(CT::T_RETURN_REF)) {
                 $nextIndex = $tokens->getNextMeaningfulToken($nextIndex);
                 $nextToken = $tokens[$nextIndex];
             }
 
-            // skip uses, attributes, constants etc
-            if (!$nextToken->isGivenKind(T_FUNCTION)) {
-                continue;
+            if ('__tostring' === strtolower($nextToken->getContent())) {
+                return true;
             }
 
-            $nextIndex = $tokens->getNextMeaningfulToken($nextIndex);
-            $nextToken = $tokens[$nextIndex];
-
-            // skip magic methods
-            if (isset($this->magicMethods[strtolower($nextToken->getContent())])) {
-                continue;
+            // skip method content
+            $bracesIndex = $tokens->getNextTokenOfKind($index, ['{', ';']);
+            if ($tokens[$bracesIndex]->equals('{')) {
+                $index = $tokens->findBlockEnd(Tokens::BLOCK_TYPE_CURLY_BRACE, $bracesIndex);
             }
-
-            $prevIndex = $tokens->getPrevMeaningfulToken($index);
-            $prevToken = $tokens[$prevIndex];
-
-            if ($prevToken->isGivenKind(T_STATIC)) {
-                $index = $prevIndex;
-                $prevIndex = $tokens->getPrevMeaningfulToken($index);
-                $prevToken = $tokens[$prevIndex];
-            }
-
-            // skip abstract or already final methods
-            if ($prevToken->isGivenKind([T_ABSTRACT, T_FINAL])) {
-                $index = $prevIndex;
-
-                continue;
-            }
-
-            $tokens->insertAt(
-                $index,
-                [
-                    new Token([T_FINAL, 'final']),
-                    new Token([T_WHITESPACE, ' ']),
-                ]
-            );
         }
+
+        return false;
+    }
+
+    private function fixClass(Tokens $tokens, int $classIndex, int $classOpenIndex): void
+    {
+        $isInterface = $tokens[$classIndex]->isGivenKind(T_INTERFACE);
+
+        $insertTokens = [
+            new Token([T_WHITESPACE, ' ']),
+            new Token([T_STRING, '\\'.\Stringable::class]),
+        ];
+
+        $implementsIndex = $tokens->getPrevTokenOfKind($classOpenIndex, [[$isInterface ? T_EXTENDS : T_IMPLEMENTS]]);
+
+        if (null === $implementsIndex || $implementsIndex < $classIndex) {
+            $implementsIndex = $tokens->getPrevNonWhitespace($classOpenIndex);
+            $insertTokens = [
+                new Token([T_WHITESPACE, ' ']),
+                $isInterface ? new Token([T_EXTENDS, 'extends']) : new Token([T_IMPLEMENTS, 'implements']),
+                ...$insertTokens,
+            ];
+        } else {
+            $insertTokens[] = new Token(',');
+        }
+
+        $tokens->insertAt($implementsIndex + 1, $insertTokens);
     }
 }
