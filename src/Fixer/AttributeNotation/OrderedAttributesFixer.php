@@ -25,11 +25,8 @@ use PhpCsFixer\FixerDefinition\FixerDefinitionInterface;
 use PhpCsFixer\FixerDefinition\VersionSpecification;
 use PhpCsFixer\FixerDefinition\VersionSpecificCodeSample;
 use PhpCsFixer\Tokenizer\Analyzer\Analysis\AttributeAnalysis;
-use PhpCsFixer\Tokenizer\Analyzer\Analysis\NamespaceAnalysis;
-use PhpCsFixer\Tokenizer\Analyzer\Analysis\NamespaceUseAnalysis;
 use PhpCsFixer\Tokenizer\Analyzer\AttributeAnalyzer;
-use PhpCsFixer\Tokenizer\Analyzer\NamespacesAnalyzer;
-use PhpCsFixer\Tokenizer\Analyzer\NamespaceUsesAnalyzer;
+use PhpCsFixer\Tokenizer\Resolver\ClassFQCNResolver;
 use PhpCsFixer\Tokenizer\Token;
 use PhpCsFixer\Tokenizer\Tokens;
 use Symfony\Component\OptionsResolver\Options;
@@ -37,6 +34,7 @@ use Symfony\Component\OptionsResolver\Options;
 /**
  * @author HypeMC <hypemc@gmail.com>
  *
+ * @phpstan-import-type _AttributeItem from AttributeAnalysis
  * @phpstan-import-type _AttributeItems from AttributeAnalysis
  */
 final class OrderedAttributesFixer extends AbstractFixer implements ConfigurableFixerInterface
@@ -48,13 +46,6 @@ final class OrderedAttributesFixer extends AbstractFixer implements Configurable
         self::ORDER_ALPHA,
         self::ORDER_NONE,
     ];
-
-    private ?NamespaceAnalysis $namespaceAnalysis = null;
-
-    /**
-     * @var null|array<string, NamespaceUseAnalysis>
-     */
-    private ?array $namespaceUseAnalyses = null;
 
     public function getDefinition(): FixerDefinitionInterface
     {
@@ -149,10 +140,12 @@ final class OrderedAttributesFixer extends AbstractFixer implements Configurable
         $index = 0;
 
         while (null !== $index = $tokens->getNextTokenOfKind($index, [[T_ATTRIBUTE]])) {
+            $classFQCNResolver = new ClassFQCNResolver($tokens, $index);
+
             /** @var list<array{name: string, start: int, end: int}> $elements */
-            $elements = array_map(function (AttributeAnalysis $attributeAnalysis) use ($tokens): array {
+            $elements = array_map(function (AttributeAnalysis $attributeAnalysis) use ($tokens, $classFQCNResolver): array {
                 return [
-                    'name' => $this->sortAttributes($tokens, $attributeAnalysis->getStartIndex(), $attributeAnalysis->getAttributes()),
+                    'name' => $this->sortAttributes($tokens, $attributeAnalysis->getStartIndex(), $attributeAnalysis->getAttributes(), $classFQCNResolver),
                     'start' => $attributeAnalysis->getStartIndex(),
                     'end' => $attributeAnalysis->getEndIndex(),
                 ];
@@ -174,7 +167,6 @@ final class OrderedAttributesFixer extends AbstractFixer implements Configurable
                 $this->sortTokens($tokens, $index, $endIndex, $sortedElements);
             } finally {
                 $index = $endIndex;
-                $this->clearNamespaceAnalysis();
             }
         }
     }
@@ -182,14 +174,14 @@ final class OrderedAttributesFixer extends AbstractFixer implements Configurable
     /**
      * @param _AttributeItems $attributes
      */
-    private function sortAttributes(Tokens $tokens, int $index, array $attributes): string
+    private function sortAttributes(Tokens $tokens, int $index, array $attributes, ClassFQCNResolver $classFQCNResolver): string
     {
         if (1 === \count($attributes)) {
-            return $this->getAttributeName($tokens, $attributes[0]['name'], $attributes[0]['start']);
+            return $this->getAttributeName($attributes[0], $classFQCNResolver);
         }
 
-        foreach ($attributes as &$attribute) {
-            $attribute['name'] = $this->getAttributeName($tokens, $attribute['name'], $attribute['start']);
+        foreach ($attributes as &$attributeItem) {
+            $attributeItem['name'] = $this->getAttributeName($attributeItem, $classFQCNResolver);
         }
 
         $sortedElements = $this->sortElements($attributes);
@@ -203,42 +195,16 @@ final class OrderedAttributesFixer extends AbstractFixer implements Configurable
         return $sortedElements[0]['name'];
     }
 
-    private function getAttributeName(Tokens $tokens, string $name, int $index): string
+    /**
+     * @param _AttributeItem $attributeItem
+     */
+    private function getAttributeName(array $attributeItem, ClassFQCNResolver $classFQCNResolver): string
     {
-        if (self::ORDER_NONE === $this->configuration['sort_algorithm']) {
-            $name = $this->determineAttributeFQCN($tokens, $name, $index);
-        }
+        $name = self::ORDER_NONE === $this->configuration['sort_algorithm']
+            ? $classFQCNResolver->resolveFor($attributeItem['nameStart'])
+            : $attributeItem['name'];
 
         return ltrim($name, '\\');
-    }
-
-    private function determineAttributeFQCN(Tokens $tokens, string $name, int $index): string
-    {
-        if ('\\' === $name[0]) {
-            return $name;
-        }
-
-        if (!$tokens[$index]->isGivenKind([T_STRING, T_NS_SEPARATOR])) {
-            $index = $tokens->getNextTokenOfKind($index, [[T_STRING], [T_NS_SEPARATOR]]);
-        }
-
-        $this->initializeNamespaceAnalysis($tokens, $index);
-
-        $namespace = $this->namespaceAnalysis->getFullName();
-
-        $firstTokenOfName = $tokens[$index]->getContent();
-        $namespaceUseAnalysis = $this->namespaceUseAnalyses[$firstTokenOfName] ?? false;
-        if ($namespaceUseAnalysis) {
-            $namespace = $namespaceUseAnalysis->getFullName();
-
-            if ($name === $firstTokenOfName) {
-                return $namespace;
-            }
-
-            $name = substr(strstr($name, '\\'), 1);
-        }
-
-        return $namespace.'\\'.$name;
     }
 
     /**
@@ -285,27 +251,5 @@ final class OrderedAttributesFixer extends AbstractFixer implements Configurable
         }
 
         $tokens->overrideRange($startIndex, $endIndex, $replaceTokens);
-    }
-
-    private function initializeNamespaceAnalysis(Tokens $tokens, int $startIndex): void
-    {
-        if (isset($this->namespaceAnalysis, $this->namespaceUseAnalyses)) {
-            return;
-        }
-
-        $this->namespaceAnalysis = (new NamespacesAnalyzer())->getNamespaceAt($tokens, $startIndex);
-
-        $this->namespaceUseAnalyses = [];
-        foreach ((new NamespaceUsesAnalyzer())->getDeclarationsInNamespace($tokens, $this->namespaceAnalysis) as $namespaceUseAnalysis) {
-            if (!$namespaceUseAnalysis->isClass()) {
-                continue;
-            }
-            $this->namespaceUseAnalyses[$namespaceUseAnalysis->getShortName()] = $namespaceUseAnalysis;
-        }
-    }
-
-    private function clearNamespaceAnalysis(): void
-    {
-        $this->namespaceAnalysis = $this->namespaceUseAnalyses = null;
     }
 }

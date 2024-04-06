@@ -152,6 +152,7 @@ final class AttributeAnalyzer
                 'start' => $attributeStartIndex,
                 'end' => $index - 1,
                 'name' => $attributeName,
+                'nameStart' => $nameStartIndex,
             ];
 
             $nextIndex = $index;

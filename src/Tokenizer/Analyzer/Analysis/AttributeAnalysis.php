@@ -17,7 +17,8 @@ namespace PhpCsFixer\Tokenizer\Analyzer\Analysis;
 /**
  * @internal
  *
- * @phpstan-type _AttributeItems list<array{start: int, end: int, name: string}>
+ * @phpstan-type _AttributeItem array{start: int, end: int, name: string, nameStart: int}
+ * @phpstan-type _AttributeItems list<_AttributeItem>
  */
 final class AttributeAnalysis
 {
