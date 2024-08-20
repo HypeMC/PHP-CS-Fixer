@@ -23,6 +23,7 @@ Rules
 
   ``['anonymous_class' => false]``
 
+- `no_space_before_named_argument_colon <./../rules/function_notation/no_space_before_named_argument_colon.rst>`_
 - `single_line_empty_body <./../rules/basic/single_line_empty_body.rst>`_
 - `trailing_comma_in_multiline <./../rules/control_structure/trailing_comma_in_multiline.rst>`_ with config:
 
